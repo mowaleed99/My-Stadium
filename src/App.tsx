@@ -1,4 +1,9 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
+import FullCalendar from '@fullcalendar/react';
+import dayGridPlugin from '@fullcalendar/daygrid';
+import interactionPlugin from '@fullcalendar/interaction';
+import arLocale from '@fullcalendar/core/locales/ar';
+import { API_URL, WHATSAPP_NUMBER } from './config';
 import { 
   PITCH_FIELDS, 
   TIME_SLOTS, 
@@ -27,26 +32,70 @@ import {
 } from 'lucide-react';
 
 export default function App() {
-  // Application Mode: 'public' (Booking portal) or 'admin' (Dashboard view)
-  const [appMode, setAppMode] = useState<'public' | 'admin'>('public');
+  const expectedAdminToken = (import.meta as any).env.VITE_ADMIN_TOKEN || 'jarash123';
+
+  // Application Mode
+  const [appMode, setAppMode] = useState<'public' | 'admin' | 'login'>('public');
+
+  // Simple MVP Auth
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    return localStorage.getItem('isAdmin') === 'true';
+  });
+
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tokenParam = params.get('token');
+    if (tokenParam === expectedAdminToken) {
+      localStorage.setItem('isAdmin', 'true');
+      setIsAuthenticated(true);
+      window.history.replaceState({}, document.title, window.location.pathname);
+      setAppMode('admin');
+    } else if (tokenParam) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, [expectedAdminToken]);
+
+  const handleLoginSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (loginPassword === expectedAdminToken) {
+      localStorage.setItem('isAdmin', 'true');
+      setIsAuthenticated(true);
+      setAppMode('admin');
+      setLoginError('');
+      setLoginPassword('');
+    } else {
+      setLoginError('كلمة المرور غير صحيحة');
+    }
+  };
 
   // Local database of bookings
   const [bookings, setBookings] = useState<Booking[]>(PRESEEDED_BOOKINGS);
 
   // Selected date, default is today "2026-05-15"
-  const [selectedDate, setSelectedDate] = useState<string>('2026-05-15');
+  const today = new Date().toISOString().split('T')[0];
+  const [selectedDate, setSelectedDate] = useState<string>(today);
 
-  // Selected field in public view
+  type DailyAvailability = {
+    date: string;
+    slots: { id: string; time: string; status: string }[];
+  };
+
+  // Full calendar state
+  const [monthData, setMonthData] = useState<DailyAvailability[]>([]);
+  const [calendarRange, setCalendarRange] = useState({ start: '', end: '' });
+  const [isDayModalOpen, setIsDayModalOpen] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Core Booking State
   const [selectedFieldId, setSelectedFieldId] = useState<string>(PITCH_FIELDS[0].id);
-
-  // Selected time slot
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
-
-  // Holds state of the newly created booking for success modal presentation
   const [latestBooking, setLatestBooking] = useState<Booking | null>(null);
   const [latestBookingField, setLatestBookingField] = useState<FootballField | null>(null);
 
-  // Public & Admin Form Data
+  // Form Data
   const [userName, setUserName] = useState('');
   const [userPhone, setUserPhone] = useState('');
   const [userEmail, setUserEmail] = useState('');
@@ -54,32 +103,42 @@ export default function App() {
   const [notes, setNotes] = useState('');
   const [formError, setFormError] = useState('');
 
-  // Admin and Manual booking fields
+  // Admin / Manual Booking Fields
   const [adminSelectedFieldId, setAdminSelectedFieldId] = useState<string>(PITCH_FIELDS[0].id);
   const [isAddingManualBooking, setIsAddingManualBooking] = useState(false);
   const [manualSlot, setManualSlot] = useState('');
-  
-  // Custom inspection state (Admin edits slot)
   const [inspectedBooking, setInspectedBooking] = useState<Booking | null>(null);
 
-  // 7 continuous selectable days in 2026-05-15 with native Arabic names
-  const calendarDays = useMemo(() => {
-    const days = [];
-    const baseDate = new Date(2026, 4, 15); // May 15, 2026
-    const arabicDays = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
-    for (let i = 0; i < 7; i++) {
-      const d = new Date(baseDate);
-      d.setDate(baseDate.getDate() + i);
-      const yyyy = d.getFullYear();
-      const mm = String(d.getMonth() + 1).padStart(2, '0');
-      const dd = String(d.getDate()).padStart(2, '0');
-      const formattedDate = `${yyyy}-${mm}-${dd}`;
-      const dayName = arabicDays[d.getDay()];
-      const dayNum = d.getDate();
-      days.push({ formattedDate, dayName, dayNum });
-    }
-    return days;
-  }, []);
+  // Derived slots for the currently selected date (filling in empty timeslots as available)
+  const apiSlots = useMemo(() => {
+    if (!selectedDate) return [];
+    const day = monthData.find(d => d.date === selectedDate);
+    const fetchedSlots = day ? day.slots : [];
+    
+    return TIME_SLOTS.map(time => {
+       const found = fetchedSlots.find(s => s.time === time);
+       if (found) return found;
+       return { id: `auto-${time}`, time, status: 'available' };
+    });
+  }, [selectedDate, monthData]);
+
+  // Fetch full month availability with 30s polling
+  useEffect(() => {
+    if (!calendarRange.start || !calendarRange.end) return;
+    
+    const fetchRange = () => {
+      fetch(`${API_URL}?from=${calendarRange.start}&to=${calendarRange.end}`)
+        .then(r => r.json())
+        .then(data => { if (data.success) setMonthData(data.data); })
+        .catch(() => {});
+    };
+    
+    setIsLoading(true);
+    fetchRange();
+    
+    const interval = setInterval(fetchRange, 30000);
+    return () => clearInterval(interval);
+  }, [calendarRange.start, calendarRange.end]);
 
   const currentPublicField = useMemo(() => {
     return PITCH_FIELDS.find(f => f.id === selectedFieldId) || PITCH_FIELDS[0];
@@ -121,7 +180,23 @@ export default function App() {
     });
   }, [bookings, adminSelectedFieldId, selectedDate]);
 
-  // Public Booking Submit (WhatsApp Redirect)
+  // Optimistic UI for Booking
+  const setOptimisticSlotStatus = (date: string, time: string, status: string) => {
+    setMonthData(prev => prev.map(day => {
+      if (day.date === date) {
+        // Find existing slot or append
+        const exists = day.slots.find(s => s.time === time);
+        if (exists) {
+          return { ...day, slots: day.slots.map(s => s.time === time ? { ...s, status } : s) };
+        } else {
+          return { ...day, slots: [...day.slots, { id: `auto-${time}`, time, status }] };
+        }
+      }
+      return day;
+    }));
+  };
+
+  // Public Booking Submit — book slot in sheet then open WhatsApp
   const handlePlaceBookingSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedSlot) {
@@ -129,18 +204,39 @@ export default function App() {
       return;
     }
 
-    const message = `مرحباً، أريد حجز ملعب الجراش يوم ${selectedDate} الفترة ${selectedSlot}.`;
-    const whatsappUrl = `https://wa.me/201000000000?text=${encodeURIComponent(message)}`;
-    window.open(whatsappUrl, '_blank');
+    const params = new URLSearchParams({
+      action: 'book',
+      date: selectedDate,
+      time: selectedSlot,
+      name: 'واتساب',
+      phone: WHATSAPP_NUMBER
+    });
+    fetch(`${API_URL}?${params}`).catch(() => {});
+
+    setOptimisticSlotStatus(selectedDate, selectedSlot, 'pending');
+
+    const message = `مرحباً، أريد حجز ملعب الجراش\nالتاريخ: ${selectedDate}\nالوقت: ${selectedSlot}`;
+    window.open(`https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(message)}`, '_blank');
+
+    setSelectedSlot(null);
+    setFormError('');
+    setIsDayModalOpen(false); // Close modal on success
   };
 
-  // Change booking status inside Admin Panel
-  const updateBookingStatus = (id: string, nextStatus: BookingStatus) => {
-    setBookings(prev => prev.map(b => b.id === id ? { ...b, status: nextStatus } : b));
-    if (inspectedBooking && inspectedBooking.id === id) {
-      setInspectedBooking(prev => prev ? { ...prev, status: nextStatus } : null);
-    }
+  // Admin: Approve pending slot → booked
+  const approveSlot = (date: string, time: string) => {
+    setOptimisticSlotStatus(date, time, 'booked');
+    const params = new URLSearchParams({ action: 'approve', date, time });
+    fetch(`${API_URL}?${params}`).catch(() => {});
   };
+
+  // Admin: Reject pending slot → available again
+  const rejectSlot = (date: string, time: string) => {
+    setOptimisticSlotStatus(date, time, 'available');
+    const params = new URLSearchParams({ action: 'reject', date, time });
+    fetch(`${API_URL}?${params}`).catch(() => {});
+  };
+
 
   // Cancel/Removes a booking
   const handleCancelBooking = (id: string) => {
@@ -217,277 +313,232 @@ export default function App() {
           </div>
         </div>
 
-        {/* View Mode Toggle Switcher */}
-        <div className="flex bg-[#0f1913] p-1 rounded-xl border border-[#1b3223] w-full sm:w-auto">
+        <div className="flex gap-3">
           <button
-            id="btn-switch-public"
-            onClick={() => { setAppMode('public'); setFormError(''); }}
-            className={`flex-1 sm:flex-initial px-4 py-2 rounded-lg text-xs font-bold transition-all duration-200 flex items-center justify-center gap-2 ${
-              appMode === 'public'
-                ? 'bg-[#152e1d] text-emerald-400 border border-[#234b31]'
-                : 'text-zinc-400 hover:text-white'
-            }`}
+            onClick={() => {
+              if (appMode !== 'public') {
+                setAppMode('public');
+              } else {
+                if (isAuthenticated) {
+                  setAppMode('admin');
+                } else {
+                  setAppMode('login');
+                }
+              }
+            }}
+            className="px-4 py-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 font-bold text-xs rounded-xl border border-emerald-500/20 transition-all flex items-center gap-2"
           >
-            <Compass className="w-3.5 h-3.5" />
-            <span>بوابة الحجز المباشر</span>
+            {appMode === 'public' ? (
+              <>
+                <User className="w-3.5 h-3.5" />
+                دخول الإدارة
+              </>
+            ) : (
+              'العودة للحجز'
+            )}
           </button>
-          
-          <button
-            id="btn-switch-admin"
-            onClick={() => { setAppMode('admin'); setFormError(''); }}
-            className={`flex-1 sm:flex-initial px-4 py-2 rounded-lg text-xs font-bold transition-all duration-200 flex items-center justify-center gap-2 ${
-              appMode === 'admin'
-                ? 'bg-[#152e1c] text-emerald-400 border border-[#234b31]'
-                : 'text-zinc-400 hover:text-white'
-            }`}
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span>لوحة تحكم المشرف</span>
-          </button>
+          {isAuthenticated && appMode === 'admin' && (
+            <button
+              onClick={() => {
+                localStorage.removeItem('isAdmin');
+                setIsAuthenticated(false);
+                setAppMode('public');
+              }}
+              className="px-4 py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 font-bold text-xs rounded-xl border border-rose-500/20 transition-all"
+            >
+              تسجيل الخروج
+            </button>
+          )}
         </div>
       </header>
 
-      {/* HORIZONTAL DATE TIMELINE STRIP */}
-      <section id="date-selector-line" className="bg-[#0b120e] border-b border-[#14261a] py-3.5 px-4 md:px-8 relative z-10">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-zinc-400 shrink-0">
-            <Calendar className="w-4 h-4 text-emerald-400" />
-            <span className="text-xs font-bold font-sans text-emerald-400">
-              اختر تاريخ حجز مباراة:
-            </span>
-          </div>
 
-          {/* Touch-Friendly horizontal scrolling strip of dates */}
-          <div className="flex gap-2 overflow-x-auto pb-1 max-w-full scrollbar-none snap-x self-end md:self-auto">
-            {calendarDays.map((day) => {
-              const isSelected = selectedDate === day.formattedDate;
-              return (
-                <button
-                  key={day.formattedDate}
-                  onClick={() => {
-                    setSelectedDate(day.formattedDate);
-                    setSelectedSlot(null); // Reset select slot
-                  }}
-                  className={`flex-shrink-0 snap-start flex items-center gap-2.5 px-4 py-2.5 rounded-xl transition-all duration-200 border ${
-                    isSelected
-                      ? 'bg-emerald-600 border-emerald-500 text-black shadow-md font-bold'
-                      : 'bg-[#121a15] border-[#1f3727] text-zinc-300 hover:text-zinc-100 hover:border-emerald-600/40'
-                  }`}
-                >
-                  <div className={`text-[10px] font-bold ${isSelected ? 'text-black' : 'text-zinc-400'}`}>
-                    {day.dayName}
-                  </div>
-                  <div className={`w-[1px] h-3.5 ${isSelected ? 'bg-black/30' : 'bg-emerald-900'}`} />
-                  <div className="text-xs font-extrabold font-mono">
-                    {day.dayNum}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </section>
 
       {/* CORE WORKFLOW AREA */}
-      <main id="main-application-view" className="max-w-7xl mx-auto px-4 md:px-8 py-6 relative z-10 flex-1">
+      <main className="max-w-7xl mx-auto px-4 py-8 relative z-10 flex-1">
         
-        {/* VIEW 1: USER PUBLIC PORTAL */}
-        {appMode === 'public' && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            
-            {/* Left Hand: Main Field Details, features, Slot Grid */}
-            <div className="col-span-1 lg:col-span-7 space-y-6">
+        {/* VIEW 1: ADMIN LOGIN PAGE */}
+        {appMode === 'login' && (
+          <div className="flex items-center justify-center min-h-[60vh]">
+            <div className="w-full max-w-sm glass-panel p-8 rounded-3xl border border-emerald-500/20 text-center">
+              <div className="w-16 h-16 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto mb-6">
+                <User className="w-8 h-8 text-emerald-400" />
+              </div>
+              <h2 className="text-xl font-black text-white mb-2">تسجيل دخول الإدارة</h2>
+              <p className="text-xs text-zinc-400 mb-8">يرجى إدخال كلمة المرور للوصول إلى لوحة التحكم</p>
               
-              {/* Arena Details Block */}
-              <div className="bg-[#0b120d] rounded-2xl overflow-hidden border border-[#14261a] transition-all">
-                <div className="h-44 relative overflow-hidden flex flex-col justify-end p-5">
-                  <div className="absolute inset-0 z-0">
-                    <img 
-                      src={currentPublicField.image} 
-                      alt={currentPublicField.name} 
-                      className="w-full h-full object-cover brightness-[0.35] saturate-[0.8] contrast-[1.1]"
-                      referrerPolicy="no-referrer"
-                    />
-                    <div className="absolute inset-0 bg-gradient-to-t from-[#0b120d] via-[#0b120d]/20 to-transparent" />
-                  </div>
-
-                  <div className="relative z-10 text-right">
-                    <div className="flex items-center gap-2 mb-1.5 justify-start">
-                      <span className="text-[9px] font-bold bg-[#10b981] text-black px-2 py-0.5 rounded">
-                        نجيل صناعي عالي الجودة
-                      </span>
-                      <span className="text-xs text-amber-400 font-bold bg-black/75 px-2 py-0.5 rounded">
-                        ★ {currentPublicField.rating.toFixed(1)}
-                      </span>
-                    </div>
-                    <h3 className="text-lg font-black text-white">
-                      {currentPublicField.name}
-                    </h3>
-                    <p className="text-xs text-zinc-400 mt-1 flex items-center gap-1 justify-start">
-                      <MapPin className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                      <span>طنطا - محلة مرحوم</span>
-                    </p>
-                  </div>
+              <form onSubmit={handleLoginSubmit} className="space-y-4">
+                <div>
+                  <input
+                    type="password"
+                    placeholder="كلمة المرور"
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                    className="w-full bg-[#030604] border border-emerald-950 rounded-xl py-3 px-4 text-center text-white focus:outline-none focus:border-emerald-500/60 font-mono tracking-widest"
+                    autoFocus
+                  />
+                  {loginError && (
+                    <p className="text-rose-400 text-xs mt-2">{loginError}</p>
+                  )}
                 </div>
-
-                {/* Sub Features */}
-                <div className="px-4 py-3 bg-[#080d09] border-t border-[#14261a] text-[10.5px] text-zinc-400 flex flex-wrap gap-x-5 gap-y-1.5 rounded-b-2xl">
-                  {currentPublicField.features.map((feat, index) => (
-                    <span key={index} className="flex items-center gap-1.5 font-medium">
-                      <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                      {feat}
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              {/* Booking slots zone */}
-              <div id="booking-slots-zone" className="space-y-3">
-                <div className="flex justify-between items-center">
-                  <div>
-                    <h2 className="text-sm font-black text-white tracking-tight">
-                      الأوقات وفترات اللعب المتاحة لليوم
-                    </h2>
-                    <p className="text-[11px] text-zinc-400">
-                      الفترة القياسية المريحة تمتد على مدار ٩٠ دقيقة (ساعة ونصف).
-                    </p>
-                  </div>
-                  <div className="flex gap-2.5 text-[10px] font-bold">
-                    <span className="flex items-center gap-1 text-zinc-400">
-                      <span className="w-2.5 h-2.5 rounded bg-[#10b981]" /> متاح فوري
-                    </span>
-                    <span className="flex items-center gap-1 text-zinc-400">
-                      <span className="w-2.5 h-2.5 rounded bg-rose-500" /> محجوز مسبقاً
-                    </span>
-                  </div>
-                </div>
-
-                {/* Custom layout touch friendly slots cards */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-                  {publicSlotsState.map(({ time, isBooked, booking }) => {
-                    const isPrime = isPrimeSlot(time);
-                    const isCurrentlySelected = selectedSlot === time;
-                    const price = isPrime ? currentPublicField.primePrice : currentPublicField.basePrice;
-
-                    return (
-                      <button
-                        key={time}
-                        onClick={() => {
-                          if (!isBooked) {
-                            setSelectedSlot(time);
-                            setFormError('');
-                          } else {
-                            setFormError(`عذراً، الفترة "${time}" محجوزة مسبقاً للاسم: ${booking?.userName}`);
-                          }
-                        }}
-                        disabled={isBooked}
-                        className={`p-3.5 text-center border transition-all duration-200 relative flex flex-col justify-between items-center rounded-xl min-h-[96px] ${
-                          isBooked
-                            ? 'bg-[#121212] border-zinc-800 text-zinc-600 cursor-not-allowed opacity-40'
-                            : isCurrentlySelected
-                            ? 'bg-[#122c18] border-emerald-400 text-white shadow-md ring-2 ring-emerald-500/30'
-                            : 'bg-[#0b100c] border-[#16271a] text-zinc-350 hover:border-emerald-500/35'
-                        }`}
-                      >
-
-
-                        {isPrime && (
-                          <span className={`text-[8.5px] px-2 py-0.5 rounded font-bold mb-1.5 ${
-                            isCurrentlySelected ? 'bg-white/20 text-white font-extrabold' : isBooked ? 'bg-zinc-805 text-zinc-550' : 'bg-[#122316] text-[#4ade80]'
-                          }`}>
-                            ⭐ فترة ذروة
-                          </span>
-                        )}
-
-                        <span className="text-xs font-bold font-mono tracking-tight block">
-                          {time}
-                        </span>
-
-                        <div className="mt-2 text-center">
-                          <span className={`text-sm font-extrabold leading-none block ${isBooked ? 'text-zinc-500 font-medium' : isCurrentlySelected ? 'text-white' : 'text-emerald-400'}`}>
-                            {isBooked ? 'محجوز' : `${price} ج.م`}
-                          </span>
-                          {!isBooked && (
-                            <span className={`text-[8.5px] font-medium block mt-1 ${isCurrentlySelected ? 'text-emerald-300' : 'text-zinc-500'}`}>
-                              لكل ٩٠ دقيقة
-                            </span>
-                          )}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
+                <button
+                  type="submit"
+                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-black font-extrabold text-sm rounded-xl transition-all"
+                >
+                  دخول
+                </button>
+              </form>
             </div>
+          </div>
+        )}
 
-            {/* Right Hand Sticky Reservation Card */}
-            <div className="col-span-1 lg:col-span-5">
-                <div className="glass-panel rounded-3xl p-5 border border-emerald-950/30 sticky top-24 space-y-4">
-                <div className="border-b border-emerald-950/20 pb-3">
-                  <span className="text-[10px] text-emerald-400 font-bold block">
-                    الخطوة ٢: أدخل بيانات كابتن الفريق
-                  </span>
-                  <h3 className="text-sm font-black text-white mt-1">
-                    أدخل بيانات كابتن الموعد المختار
-                  </h3>
-                  <p className="text-[11px] text-zinc-400 mt-1 leading-relaxed">
-                    سيتم تأكيد اللعب في ملعب <span className="text-emerald-400 font-semibold">{currentPublicField.name}</span> بتاريخ <span className="text-emerald-400 font-semibold">{selectedDate}</span>.
+        {/* VIEW 2: PUBLIC BOOKING FLOW (FULL MONTH CALENDAR) */}
+        {appMode === 'public' && (
+          <div className="space-y-6">
+            <div className="bg-[#0b120d] rounded-2xl p-4 border border-[#14261a]">
+              <div className="flex justify-between items-center mb-4">
+                <div>
+                  <h2 className="text-sm font-black text-white tracking-tight">
+                    اختر يوم الحجز من النتيجة
+                  </h2>
+                  <p className="text-[11px] text-zinc-400">
+                    انقر على اليوم لعرض جميع الفترات المتاحة
                   </p>
                 </div>
+                <div className="flex gap-2.5 text-[10px] font-bold">
+                  <span className="flex items-center gap-1 text-zinc-400"><span className="w-2.5 h-2.5 rounded bg-[#10b981]" /> متاح</span>
+                  <span className="flex items-center gap-1 text-zinc-400"><span className="w-2.5 h-2.5 rounded bg-[#f59e0b]" /> محجوز جزئياً</span>
+                  <span className="flex items-center gap-1 text-zinc-400"><span className="w-2.5 h-2.5 rounded bg-[#ef4444]" /> محجوز بالكامل</span>
+                </div>
+              </div>
 
-                {selectedSlot ? (
-                  <form onSubmit={handlePlaceBookingSubmit} className="space-y-4">
-                    {/* Summary row */}
-                    <div className="bg-[#070e0a] rounded-xl p-3 border border-emerald-950/40 flex items-center justify-between">
-                      <div>
-                        <p className="text-[8.5px] text-white/40">توقيت الحجز</p>
-                        <p className="text-xs font-bold text-white font-mono mt-0.5">{selectedSlot}</p>
-                      </div>
-                      <div className="text-left">
-                        <p className="text-[8.5px] text-white/40">السعر</p>
-                        <p className="text-sm font-black text-emerald-400">
-                          {currentPublicField.basePrice} ج.م
-                        </p>
-                      </div>
+              {/* FullCalendar Wrapper */}
+              <div className="calendar-container rounded-xl overflow-hidden text-xs" dir="ltr">
+                <FullCalendar
+                  plugins={[dayGridPlugin, interactionPlugin]}
+                  initialView="dayGridMonth"
+                  locale={arLocale}
+                  direction="rtl"
+                  headerToolbar={{
+                    left: 'prev,next today',
+                    center: 'title',
+                    right: ''
+                  }}
+                  events={monthData.map(day => {
+                    const totalSlots = TIME_SLOTS.length;
+                    const bookedCount = day.slots.filter(s => s.status === 'booked' || s.status === 'pending').length;
+                    let color = '#10b981'; // Green
+                    if (bookedCount === totalSlots) color = '#ef4444'; // Red
+                    else if (bookedCount > 0) color = '#f59e0b'; // Yellow
+
+                    return {
+                      start: day.date,
+                      display: 'background',
+                      backgroundColor: color,
+                    };
+                  })}
+                  datesSet={(arg) => {
+                    setCalendarRange({
+                      start: arg.startStr.split('T')[0],
+                      end: arg.endStr.split('T')[0]
+                    });
+                  }}
+                  dateClick={(arg) => {
+                    setSelectedDate(arg.dateStr);
+                    setSelectedSlot(null);
+                    setIsDayModalOpen(true);
+                  }}
+                  height="auto"
+                />
+              </div>
+            </div>
+
+            {/* DAY MODAL OVERLAY */}
+            {isDayModalOpen && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+                <div className="w-full max-w-lg bg-[#070e0a] border border-emerald-950/40 rounded-3xl overflow-hidden flex flex-col max-h-[90vh]">
+                  
+                  {/* Modal Header */}
+                  <div className="p-4 border-b border-emerald-950/20 flex justify-between items-center bg-[#0b120d]">
+                    <div>
+                      <h3 className="text-sm font-black text-white">حجز يوم: <span className="text-emerald-400 font-mono tracking-wider">{selectedDate}</span></h3>
+                      <p className="text-[10px] text-zinc-400 mt-1">سعر الفترة الواحدة: {currentPublicField.basePrice} ج.م</p>
                     </div>
+                    <button 
+                      onClick={() => setIsDayModalOpen(false)}
+                      className="p-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-full transition-all"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
 
-                    {formError && (
-                      <div className="p-3 bg-rose-950/20 border border-rose-900/30 rounded-xl flex items-start gap-2.5 text-xs text-rose-400">
-                        <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                        <span>{formError}</span>
+                  {/* Modal Body */}
+                  <div className="p-4 overflow-y-auto space-y-4">
+                    {isLoading ? (
+                      <div className="py-10 text-center text-zinc-400 text-xs">جاري تحميل المواعيد...</div>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-2">
+                        {apiSlots.map(({ id, time, status }) => {
+                          const isBooked  = status === 'booked';
+                          const isPending = status === 'pending';
+                          const isUnavailable = isBooked || isPending;
+                          const isCurrentlySelected = selectedSlot === time;
+                          
+                          return (
+                            <button
+                              key={id}
+                              onClick={() => {
+                                if (!isUnavailable) {
+                                  setSelectedSlot(time);
+                                  setFormError('');
+                                } else {
+                                  setFormError(`عذراً، الفترة "${time}" ${isPending ? 'بانتظار التأكيد' : 'محجوزة'}.`);
+                                }
+                              }}
+                              disabled={isUnavailable}
+                              className={`p-3 text-center border transition-all duration-200 flex flex-col justify-center items-center rounded-xl h-[80px] ${
+                                isBooked ? 'bg-[#121212] border-zinc-800 text-zinc-600 opacity-40 cursor-not-allowed'
+                                : isPending ? 'bg-amber-950/30 border-amber-700/50 text-amber-500 cursor-not-allowed'
+                                : isCurrentlySelected ? 'bg-[#122c18] border-emerald-400 text-white shadow-md ring-2 ring-emerald-500/30'
+                                : 'bg-[#0b100c] border-[#16271a] text-zinc-300 hover:border-emerald-500/35'
+                              }`}
+                            >
+                              <span className="text-xs font-bold font-mono block">{time}</span>
+                              <span className={`text-[10px] font-extrabold mt-1 block ${isBooked ? 'text-zinc-500' : isPending ? 'text-amber-500' : 'text-emerald-400'}`}>
+                                {isBooked ? 'محجوز' : isPending ? 'بانتظار' : 'متاح'}
+                              </span>
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
 
-                    {/* WhatsApp book trigger */}
-                    <button
-                      type="submit"
-                      className="w-full py-3.5 bg-[#25D366] hover:bg-[#20ba59] active:scale-95 text-black font-black rounded-xl flex items-center justify-center gap-2 shadow-lg hover:shadow-[#25D366]/20 transition-all font-sans duration-300 pointer-events-auto"
-                    >
-                      <MessageCircle className="w-5 h-5 fill-current" />
-                      <span className="text-xs">تأكيد الحجز عبر الواتساب</span>
-                    </button>
-                    
-                    <p className="text-[9.5px] text-zinc-500 text-center uppercase tracking-wider">
-                      🔒 يتم الدفع نقداً أو فودافون كاش في الملعب.
-                    </p>
-                  </form>
-                ) : (
-                  <div className="py-12 text-center space-y-4">
-                    <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center mx-auto text-emerald-400">
-                      <Clock className="w-5 h-5" />
-                    </div>
-                    <div className="space-y-1">
-                      <h4 className="text-xs font-extrabold text-white">لم يتم اختيار أي فترة بعد!</h4>
-                      <p className="text-[11px] text-zinc-400 max-w-[210px] mx-auto leading-relaxed">
-                        الرجاء تحديد موعد وفترة الإيجار من القائمة للتواصل للحجز.
-                      </p>
-                    </div>
+                    {formError && (
+                      <div className="p-2 bg-rose-950/20 border border-rose-900/30 rounded-lg text-xs text-rose-400 text-center">
+                        {formError}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-            </div>
 
+                  {/* Modal Footer / Submit */}
+                  <div className="p-4 border-t border-emerald-950/20 bg-[#0b120d]">
+                    <button
+                      onClick={handlePlaceBookingSubmit}
+                      disabled={!selectedSlot}
+                      className={`w-full py-3.5 rounded-xl font-black text-xs flex items-center justify-center gap-2 transition-all ${
+                        selectedSlot 
+                          ? 'bg-[#25D366] hover:bg-[#20ba59] text-black shadow-lg hover:shadow-[#25D366]/20' 
+                          : 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                      }`}
+                    >
+                      <MessageCircle className="w-4 h-4" />
+                      تأكيد الفترة المحددة عبر الواتساب
+                    </button>
+                  </div>
+                  
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -543,91 +594,92 @@ export default function App() {
                   </div>
 
                   <div className="divide-y divide-emerald-950/10">
-                    {adminSlotsState.map(({ time, isBooked, booking }) => (
-                      <div
-                        key={time}
-                        className={`p-4 transition-all duration-300 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 ${
-                          isBooked 
-                            ? 'bg-gradient-to-l from-emerald-950/10 via-transparent to-transparent' 
+                    {apiSlots.map(({ id, time, status }) => {
+                      const isPending   = status === 'pending';
+                      const isBooked    = status === 'booked';
+                      const isAvailable = status === 'available';
+                      return (
+                        <div
+                          key={id}
+                          className={`p-4 transition-all duration-300 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 ${
+                            isBooked  ? 'bg-gradient-to-l from-emerald-950/10 via-transparent to-transparent'
+                            : isPending ? 'bg-gradient-to-l from-amber-950/10 via-transparent to-transparent'
                             : 'bg-transparent hover:bg-white/[0.01]'
-                        }`}
-                      >
-                        {/* Time indicator and type tag */}
-                        <div className="flex items-center gap-3 shrink-0 min-w-[130px]">
-                          <span className="font-mono text-xs text-white font-bold">
-                            {time}
-                          </span>
-                          {isPrimeSlot(time) ? (
-                            <span className="text-[8px] bg-emerald-500/10 text-[#4ade80] font-bold px-1.5 py-0.5 rounded">
-                              🔥 ذروة
-                            </span>
-                          ) : (
-                            <span className="text-[8px] bg-zinc-800 text-zinc-500 font-bold px-1.5 py-0.5 rounded">
-                              عادي
-                            </span>
-                          )}
-                        </div>
+                          }`}
+                        >
+                          {/* Time + status badge */}
+                          <div className="flex items-center gap-3 shrink-0 min-w-[130px]">
+                            <span className="font-mono text-xs text-white font-bold">{time}</span>
+                            {isPending && (
+                              <span className="text-[8px] bg-amber-500/10 text-amber-400 font-bold px-1.5 py-0.5 rounded">
+                                ⏳ بانتظار
+                              </span>
+                            )}
+                            {isBooked && (
+                              <span className="text-[8px] bg-emerald-500/10 text-emerald-400 font-bold px-1.5 py-0.5 rounded">
+                                ✓ محجوز
+                              </span>
+                            )}
+                            {isAvailable && (
+                              <span className="text-[8px] bg-zinc-800 text-zinc-500 font-bold px-1.5 py-0.5 rounded">
+                                شاغر
+                              </span>
+                            )}
+                          </div>
 
-                        {/* Booking owner details */}
-                        <div className="flex-1 min-w-0">
-                          {isBooked && booking ? (
-                            <div className="flex items-start gap-2.5">
-                              <div className="w-1 h-8 rounded-full bg-[#10b981] mt-1 shrink-0" />
-                              <div className="truncate">
-                                <div className="flex items-center gap-1.5">
-                                  <span className="text-xs font-black text-white">
-                                    {booking.userName}
-                                  </span>
-                                  {booking.gameType && (
-                                    <span className="text-[9px] px-1.5 py-[0.5px] rounded bg-white/5 border border-white/10 text-emerald-400">
-                                      {booking.gameType === 'friendly' ? 'ودي' : booking.gameType === 'practice' ? 'تدريب' : booking.gameType === 'tournament' ? 'بطولة' : 'دوري'}
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="flex items-center gap-2 mt-0.5 text-[10px] text-zinc-400">
-                                  <span className="font-mono">{booking.userPhone}</span>
-                                  <span>•</span>
-                                  <span className="text-emerald-400 font-bold">{booking.price} ج.م</span>
-                                </div>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-2 text-[11px] text-zinc-500 italic">
-                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500/40" />
-                              الفترة شاغرة حالياً • متاحة للاعبينا للحجز
-                            </div>
-                          )}
-                        </div>
+                          {/* Status description */}
+                          <div className="flex-1 min-w-0 text-[11px]">
+                            {isBooked && <span className="text-emerald-400 font-bold">تم الحجز والتأكيد</span>}
+                            {isPending && <span className="text-amber-400">بانتظار تأكيد الدفع عبر الواتساب</span>}
+                            {isAvailable && <span className="text-zinc-500 italic">الفترة شاغرة • متاحة للحجز</span>}
+                          </div>
 
-                        {/* Management action button triggers */}
-                        <div className="shrink-0 flex items-center gap-2">
-                          {isBooked && booking ? (
-                            <button
-                              onClick={() => setInspectedBooking(booking)}
-                              className="px-3 py-1 bg-white/5 hover:bg-white/10 text-white hover:text-emerald-400 text-[10.5px] font-bold rounded-lg transition-all"
-                            >
-                              تفاصيل الحجز وإلغائه
-                            </button>
-                          ) : (
-                            <button
-                              onClick={() => {
-                                setAdminSelectedFieldId(adminSelectedFieldId);
-                                setSelectedDate(selectedDate);
-                                setManualSlot(time);
-                                setIsAddingManualBooking(true);
-                              }}
-                              className="px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 hover:bg-emerald-500/20 text-emerald-400 text-[10.5px] font-bold rounded-lg transition-all"
-                            >
-                              + تخصيص ولعب فوري
-                            </button>
-                          )}
+                          {/* Action buttons */}
+                          <div className="shrink-0 flex items-center gap-2">
+                            {isPending && (
+                              <>
+                                <button
+                                  onClick={() => approveSlot(selectedDate, time)}
+                                  className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-black text-[10.5px] font-black rounded-lg transition-all"
+                                >
+                                  ✔ تأكيد
+                                </button>
+                                <button
+                                  onClick={() => rejectSlot(selectedDate, time)}
+                                  className="px-3 py-1 bg-rose-900/40 hover:bg-rose-800/60 border border-rose-700/30 text-rose-400 text-[10.5px] font-black rounded-lg transition-all"
+                                >
+                                  ✖ رفض
+                                </button>
+                              </>
+                            )}
+                            {isBooked && (
+                              <button
+                                onClick={() => rejectSlot(selectedDate, time)}
+                                className="px-3 py-1 bg-white/5 hover:bg-rose-900/30 text-zinc-400 hover:text-rose-400 text-[10.5px] font-bold rounded-lg transition-all"
+                              >
+                                إلغاء
+                              </button>
+                            )}
+                            {isAvailable && (
+                              <button
+                                onClick={() => {
+                                  setManualSlot(time);
+                                  setIsAddingManualBooking(true);
+                                }}
+                                className="px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 hover:bg-emerald-500/20 text-emerald-400 text-[10.5px] font-bold rounded-lg transition-all"
+                              >
+                                + حجز يدوي
+                              </button>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
 
                 </div>
               </div>
+
 
               {/* Right Hand detail column */}
               <div className="col-span-1 lg:col-span-4 space-y-6">
@@ -740,113 +792,6 @@ export default function App() {
         }}
       />
 
-      {/* 2. ADMIN BOOKING INSPECTION & MANAGEMENT */}
-      {inspectedBooking && (
-        <div id="booking-management-modal" className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/95 backdrop-blur-md" dir="rtl">
-          <div className="w-full max-w-md glass-panel-heavy rounded-3xl overflow-hidden relative border border-emerald-500/20 shadow-2xl">
-            
-            <div className="p-5 border-b border-white/5 flex justify-between items-center">
-              <div>
-                <p className="text-[10px] font-mono text-emerald-400 uppercase tracking-widest font-bold">
-                  مركز تحكم الإشراف اليومي
-                </p>
-                <h3 className="text-sm font-black text-white mt-0.5">
-                  تفاصيل وتأكيد فترات اللعب
-                </h3>
-              </div>
-              <button
-                onClick={() => setInspectedBooking(null)}
-                className="text-white/40 hover:text-white bg-white/5 p-1.5 rounded-full transition-all"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="p-5 space-y-4">
-              <div className="bg-[#020503] rounded-2xl p-4 border border-emerald-950/40 text-xs space-y-3 text-right">
-                <div className="flex justify-between">
-                  <span className="text-zinc-500">اسم كابتن الحجز المسؤول:</span>
-                  <span className="font-extrabold text-white">{inspectedBooking.userName}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-zinc-500">رقم المحمول للتواصل:</span>
-                  <span className="font-mono text-white text-left">{inspectedBooking.userPhone}</span>
-                </div>
-                {inspectedBooking.userEmail && (
-                  <div className="flex justify-between">
-                    <span className="text-zinc-500">البريد الإلكتروني:</span>
-                    <span className="text-white">{inspectedBooking.userEmail}</span>
-                  </div>
-                )}
-                <div className="flex justify-between">
-                  <span className="text-zinc-500">تاريخ الحجز المعتمد:</span>
-                  <span className="font-bold text-white">{inspectedBooking.date}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-zinc-500">الفترة الزمنية المختارة:</span>
-                  <span className="font-bold text-emerald-400 font-mono">{inspectedBooking.timeSlot}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-zinc-500">تكلفة فترة اللعب المستحقة:</span>
-                  <span className="font-black text-[#4ade80]">{inspectedBooking.price} ج.م</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-zinc-500">حالة عملية الحجز اليوم:</span>
-                  <span className={`px-3 py-0.5 rounded-full text-[10px] font-bold ${
-                    inspectedBooking.status === 'confirmed' 
-                      ? 'bg-emerald-500/10 text-[#4ade80] border border-emerald-500/20' 
-                      : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                  }`}>
-                    {inspectedBooking.status === 'confirmed' ? 'تم التأكيد' : 'في انتظار التأكيد'}
-                  </span>
-                </div>
-                {inspectedBooking.notes && (
-                  <div className="border-t border-emerald-950/20 mt-3 pt-2.5">
-                    <p className="text-[10px] text-zinc-500 uppercase">ملاحظات وطلبات اللاعب:</p>
-                    <p className="italic text-zinc-300 mt-1 max-h-16 overflow-y-auto leading-relaxed">{inspectedBooking.notes}</p>
-                  </div>
-                )}
-              </div>
-
-              {/* Approve/Cancelling buttons */}
-              <div className="grid grid-cols-2 gap-2.5">
-                {inspectedBooking.status === 'pending' ? (
-                  <button
-                    onClick={() => updateBookingStatus(inspectedBooking.id, 'confirmed')}
-                    className="py-2.5 bg-emerald-600 hover:bg-emerald-500 text-black font-extrabold text-xs rounded-xl transition-all"
-                  >
-                    تصديق وتأكيد الحجز فوري
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => updateBookingStatus(inspectedBooking.id, 'pending')}
-                    className="py-2.5 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-xl transition-all"
-                  >
-                    تغيير الحالة لمعلق
-                  </button>
-                )}
-
-                <button
-                  onClick={() => handleCancelBooking(inspectedBooking.id)}
-                  className="py-2.5 bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs rounded-xl transition-all"
-                >
-                  إلغاء تماماً وتفريغ الحقل
-                </button>
-              </div>
-
-              <div className="text-center">
-                <button
-                  onClick={() => setInspectedBooking(null)}
-                  className="text-[10px] text-zinc-400 hover:underline hover:text-white"
-                >
-                  إغلاق والرجوع للجدول
-                </button>
-              </div>
-            </div>
-
-          </div>
-        </div>
-      )}
 
       {/* 3. ADMIN TOOLS: DIRECT MANUAL SUBMISSION ENTRY OVERLAY */}
       {isAddingManualBooking && (
