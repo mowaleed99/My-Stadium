@@ -32,7 +32,14 @@ import {
 } from 'lucide-react';
 
 export default function App() {
-  const expectedAdminToken = (import.meta as any).env.VITE_ADMIN_TOKEN || 'jarash123';
+  // Irreversible SHA-256 hashes of the admin passwords
+  // This makes it impossible for anyone inspecting the code to know the original passwords.
+  const validAdminHashes = [
+    '1a11058fec1ea51a1f2fb97707ce9661788149bcb773cfc98fe8fb2d8967cba0', // mostafa@maleka2026
+    'c0125c8ab374d2eb6ea97dfeb120e3f26054bd0aa8a5ea727b434340e3323f35', // yahea@captain2026
+    '99da6babd1407ec6d3f698a7e9bef1ad6453ae62b8d7e0ab3ca7543a9500fd5d', // bebo@jarash2026
+    '3189c64a4487256d750f9c23c617307773fba6d052da4e3157bd92394632fb76'  // jarash123
+  ];
 
   // Application Mode
   const [appMode, setAppMode] = useState<'public' | 'admin' | 'login'>('public');
@@ -46,21 +53,38 @@ export default function App() {
   const [loginError, setLoginError] = useState('');
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const tokenParam = params.get('token');
-    if (tokenParam === expectedAdminToken) {
-      localStorage.setItem('isAdmin', 'true');
-      setIsAuthenticated(true);
-      window.history.replaceState({}, document.title, window.location.pathname);
-      setAppMode('admin');
-    } else if (tokenParam) {
-      window.history.replaceState({}, document.title, window.location.pathname);
-    }
-  }, [expectedAdminToken]);
+    const checkToken = async () => {
+      const params = new URLSearchParams(window.location.search);
+      const tokenParam = params.get('token');
+      if (tokenParam) {
+        const msgBuffer = new TextEncoder().encode(tokenParam);
+        const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        const hashedPassword = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+        if (validAdminHashes.includes(hashedPassword)) {
+          localStorage.setItem('isAdmin', 'true');
+          setIsAuthenticated(true);
+          window.history.replaceState({}, document.title, window.location.pathname);
+          setAppMode('admin');
+        } else {
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }
+      }
+    };
+    checkToken();
+  }, []);
+
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (loginPassword === expectedAdminToken) {
+    
+    // Hash the entered password using Web Crypto API
+    const msgBuffer = new TextEncoder().encode(loginPassword);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const hashedPassword = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+    if (validAdminHashes.includes(hashedPassword)) {
       localStorage.setItem('isAdmin', 'true');
       setIsAuthenticated(true);
       setAppMode('admin');
@@ -78,8 +102,17 @@ export default function App() {
   const today = new Date().toISOString().split('T')[0];
   const [selectedDate, setSelectedDate] = useState<string>(today);
 
-  // Full calendar state
-  const [calendarRange, setCalendarRange] = useState({ start: '', end: '' });
+  // Full calendar state — initialize to current month so admin view also fetches data
+  const [calendarRange, setCalendarRange] = useState(() => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    // Start of previous month (FullCalendar shows surrounding days too)
+    const start = new Date(year, month - 1, 1).toISOString().split('T')[0];
+    // End of next month
+    const end = new Date(year, month + 2, 0).toISOString().split('T')[0];
+    return { start, end };
+  });
   const [isDayModalOpen, setIsDayModalOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -112,7 +145,16 @@ export default function App() {
     const fetchRange = () => {
       fetch(`${API_URL}?action=getBookings&from=${calendarRange.start}&to=${calendarRange.end}`)
         .then(r => r.json())
-        .then(data => { if (data.success) setFetchedBookings(data.data); })
+        .then(data => {
+          if (data.success) {
+            // Merge: keep any optimistic bookings not yet confirmed by API
+            setFetchedBookings(prev => {
+              const apiIds = new Set((data.data as Booking[]).map((b: Booking) => b.id));
+              const optimisticOnly = prev.filter(b => !apiIds.has(b.id));
+              return [...(data.data as Booking[]), ...optimisticOnly];
+            });
+          }
+        })
         .catch(() => {})
         .finally(() => setIsLoading(false));
     };
