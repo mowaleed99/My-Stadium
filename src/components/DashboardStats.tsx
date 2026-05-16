@@ -15,7 +15,7 @@ export const DashboardStats: React.FC<DashboardStatsProps> = ({
   selectedDate,
 }) => {
   // Filter bookings for the selected date
-  const dateBookings = bookings.filter((b) => b.date === selectedDate && b.status !== 'canceled');
+  const dateBookings = bookings.filter((b) => b.date === selectedDate && b.status !== 'cancelled');
 
   // Compute stats
   const revenue = dateBookings.reduce((sum, b) => sum + b.price, 0);

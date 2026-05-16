@@ -7,8 +7,8 @@ import { API_URL, WHATSAPP_NUMBER } from './config';
 import { 
   PITCH_FIELDS, 
   TIME_SLOTS, 
-  PRESEEDED_BOOKINGS, 
-  isPrimeSlot 
+  PRESEEDED_BOOKINGS,
+  formatTime12Hour
 } from './constants';
 import { Booking, FootballField, BookingStatus } from './types';
 import { PitchVisualizer } from './components/PitchVisualizer';
@@ -71,27 +71,22 @@ export default function App() {
     }
   };
 
-  // Local database of bookings
-  const [bookings, setBookings] = useState<Booking[]>(PRESEEDED_BOOKINGS);
+  // Local database of bookings fetched from Google Sheets API
+  const [fetchedBookings, setFetchedBookings] = useState<Booking[]>([]);
 
   // Selected date, default is today "2026-05-15"
   const today = new Date().toISOString().split('T')[0];
   const [selectedDate, setSelectedDate] = useState<string>(today);
 
-  type DailyAvailability = {
-    date: string;
-    slots: { id: string; time: string; status: string }[];
-  };
-
   // Full calendar state
-  const [monthData, setMonthData] = useState<DailyAvailability[]>([]);
   const [calendarRange, setCalendarRange] = useState({ start: '', end: '' });
   const [isDayModalOpen, setIsDayModalOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
   // Core Booking State
   const [selectedFieldId, setSelectedFieldId] = useState<string>(PITCH_FIELDS[0].id);
-  const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
+  const [selectedStartTime, setSelectedStartTime] = useState<string>('');
+  const [selectedDuration, setSelectedDuration] = useState<number>(1.5);
   const [latestBooking, setLatestBooking] = useState<Booking | null>(null);
   const [latestBookingField, setLatestBookingField] = useState<FootballField | null>(null);
 
@@ -106,180 +101,176 @@ export default function App() {
   // Admin / Manual Booking Fields
   const [adminSelectedFieldId, setAdminSelectedFieldId] = useState<string>(PITCH_FIELDS[0].id);
   const [isAddingManualBooking, setIsAddingManualBooking] = useState(false);
-  const [manualSlot, setManualSlot] = useState('');
+  const [manualStartTime, setManualStartTime] = useState<string>('');
+  const [manualDuration, setManualDuration] = useState<number>(1.5);
   const [inspectedBooking, setInspectedBooking] = useState<Booking | null>(null);
 
-  // Derived slots for the currently selected date (filling in empty timeslots as available)
-  const apiSlots = useMemo(() => {
-    if (!selectedDate) return [];
-    const day = monthData.find(d => d.date === selectedDate);
-    const fetchedSlots = day ? day.slots : [];
-    
-    return TIME_SLOTS.map(time => {
-       const found = fetchedSlots.find(s => s.time === time);
-       if (found) return found;
-       return { id: `auto-${time}`, time, status: 'available' };
-    });
-  }, [selectedDate, monthData]);
-
-  // Fetch full month availability with 30s polling
+  // Fetch full month availability with 15s polling
   useEffect(() => {
     if (!calendarRange.start || !calendarRange.end) return;
     
     const fetchRange = () => {
-      fetch(`${API_URL}?from=${calendarRange.start}&to=${calendarRange.end}`)
+      fetch(`${API_URL}?action=getBookings&from=${calendarRange.start}&to=${calendarRange.end}`)
         .then(r => r.json())
-        .then(data => { if (data.success) setMonthData(data.data); })
-        .catch(() => {});
+        .then(data => { if (data.success) setFetchedBookings(data.data); })
+        .catch(() => {})
+        .finally(() => setIsLoading(false));
     };
     
     setIsLoading(true);
     fetchRange();
     
-    const interval = setInterval(fetchRange, 30000);
+    const interval = setInterval(fetchRange, 15000);
     return () => clearInterval(interval);
   }, [calendarRange.start, calendarRange.end]);
+
+  // Derived helper: Calculate End Time
+  const calculateEndTime = (start: string, duration: number) => {
+    if (!start) return '';
+    const [h, m] = start.split(':').map(Number);
+    const totalMinutes = h * 60 + m + duration * 60;
+    const endH = Math.floor(totalMinutes / 60) % 24;
+    const endM = totalMinutes % 60;
+    return `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
+  };
+
+  const selectedEndTime = useMemo(() => calculateEndTime(selectedStartTime, selectedDuration), [selectedStartTime, selectedDuration]);
+
+  // Helper to check overlaps
+  const checkOverlap = (date: string, start: string, end: string, ignoreId?: string) => {
+    if (!start || !end) return false;
+    const s1 = parseInt(start.replace(':', ''), 10);
+    const e1 = parseInt(end.replace(':', ''), 10);
+    const parsedS1 = s1;
+    const parsedE1 = e1 < s1 ? e1 + 2400 : e1;
+
+    return fetchedBookings.some(b => {
+      if (b.date !== date || b.status === 'cancelled' || b.id === ignoreId) return false;
+      const s2 = parseInt(b.startTime.replace(':', ''), 10);
+      const e2 = parseInt(b.endTime.replace(':', ''), 10);
+      const parsedS2 = s2;
+      const parsedE2 = e2 < s2 ? e2 + 2400 : e2;
+      return (parsedS1 < parsedE2 && parsedS2 < parsedE1);
+    });
+  };
 
   const currentPublicField = useMemo(() => {
     return PITCH_FIELDS.find(f => f.id === selectedFieldId) || PITCH_FIELDS[0];
   }, [selectedFieldId]);
 
-  // Compute availability list for public view
-  const publicSlotsState = useMemo(() => {
-    return TIME_SLOTS.map(slot => {
-      const b = bookings.find(
-        book => 
-          book.fieldId === selectedFieldId && 
-          book.date === selectedDate && 
-          book.timeSlot === slot &&
-          book.status !== 'canceled'
-      );
-      return {
-        time: slot,
-        isBooked: !!b,
-        booking: b
-      };
-    });
-  }, [bookings, selectedFieldId, selectedDate]);
-
-  // Compute availability list for admin view
-  const adminSlotsState = useMemo(() => {
-    return TIME_SLOTS.map(slot => {
-      const b = bookings.find(
-        book => 
-          book.fieldId === adminSelectedFieldId && 
-          book.date === selectedDate && 
-          book.timeSlot === slot &&
-          book.status !== 'canceled'
-      );
-      return {
-        time: slot,
-        isBooked: !!b,
-        booking: b
-      };
-    });
-  }, [bookings, adminSelectedFieldId, selectedDate]);
-
   // Optimistic UI for Booking
-  const setOptimisticSlotStatus = (date: string, time: string, status: string) => {
-    setMonthData(prev => prev.map(day => {
-      if (day.date === date) {
-        // Find existing slot or append
-        const exists = day.slots.find(s => s.time === time);
-        if (exists) {
-          return { ...day, slots: day.slots.map(s => s.time === time ? { ...s, status } : s) };
-        } else {
-          return { ...day, slots: [...day.slots, { id: `auto-${time}`, time, status }] };
-        }
-      }
-      return day;
-    }));
+  const setOptimisticBooking = (booking: Booking) => {
+    setFetchedBookings(prev => {
+      const exists = prev.find(b => b.id === booking.id);
+      if (exists) return prev.map(b => b.id === booking.id ? booking : b);
+      return [...prev, booking];
+    });
   };
 
-  // Public Booking Submit — book slot in sheet then open WhatsApp
+  // Public Booking Submit
   const handlePlaceBookingSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedSlot) {
-      setFormError('يرجى تحديد فترة زمنية أولاً.');
+    if (!selectedStartTime) {
+      setFormError('يرجى تحديد وقت البدء.');
       return;
     }
 
-    const params = new URLSearchParams({
-      action: 'book',
+    if (checkOverlap(selectedDate, selectedStartTime, selectedEndTime)) {
+      setFormError('عذراً، هذا الوقت يتعارض مع حجز موجود.');
+      return;
+    }
+
+    const price = currentPublicField.basePrice * selectedDuration;
+
+    const newBooking: Booking = {
+      id: `bk_${Date.now()}`,
+      customerName: 'واتساب',
+      phone: WHATSAPP_NUMBER,
       date: selectedDate,
-      time: selectedSlot,
-      name: 'واتساب',
-      phone: WHATSAPP_NUMBER
-    });
-    fetch(`${API_URL}?${params}`).catch(() => {});
+      startTime: selectedStartTime,
+      endTime: selectedEndTime,
+      duration: selectedDuration,
+      price: price,
+      status: 'pending',
+      createdAt: new Date().toISOString()
+    };
 
-    setOptimisticSlotStatus(selectedDate, selectedSlot, 'pending');
+    fetch(`${API_URL}`, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'createBooking', ...newBooking })
+    }).catch(() => {});
 
-    const message = `مرحباً، أريد حجز ملعب الجراش\nالتاريخ: ${selectedDate}\nالوقت: ${selectedSlot}`;
+    setOptimisticBooking(newBooking);
+
+    const message = `مرحباً، أريد حجز ملعب الجراش\nالتاريخ: ${selectedDate}\nمن: ${formatTime12Hour(selectedStartTime)}\nالمدة: ${selectedDuration} ساعة`;
     window.open(`https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(message)}`, '_blank');
 
-    setSelectedSlot(null);
+    setSelectedStartTime('');
     setFormError('');
-    setIsDayModalOpen(false); // Close modal on success
+    setIsDayModalOpen(false);
   };
 
   // Admin: Approve pending slot → booked
-  const approveSlot = (date: string, time: string) => {
-    setOptimisticSlotStatus(date, time, 'booked');
-    const params = new URLSearchParams({ action: 'approve', date, time });
-    fetch(`${API_URL}?${params}`).catch(() => {});
+  const approveSlot = (id: string) => {
+    setFetchedBookings(prev => prev.map(b => b.id === id ? { ...b, status: 'booked' } : b));
+    fetch(`${API_URL}`, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'updateBookingStatus', id, status: 'booked' })
+    }).catch(() => {});
   };
 
-  // Admin: Reject pending slot → available again
-  const rejectSlot = (date: string, time: string) => {
-    setOptimisticSlotStatus(date, time, 'available');
-    const params = new URLSearchParams({ action: 'reject', date, time });
-    fetch(`${API_URL}?${params}`).catch(() => {});
+  // Admin: Reject pending slot → available again (cancel)
+  const rejectSlot = (id: string) => {
+    setFetchedBookings(prev => prev.map(b => b.id === id ? { ...b, status: 'cancelled' } : b));
+    fetch(`${API_URL}`, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'updateBookingStatus', id, status: 'cancelled' })
+    }).catch(() => {});
   };
-
 
   // Cancel/Removes a booking
   const handleCancelBooking = (id: string) => {
-    setBookings(prev => prev.filter(b => b.id !== id));
+    rejectSlot(id);
     setInspectedBooking(null);
   };
 
   // Manually adds booking as administrator
   const handleAdminManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userName.trim() || !userPhone.trim() || !manualSlot) {
+    if (!userName.trim() || !userPhone.trim() || !manualStartTime) {
       setFormError('الرجاء ملء جميع الحقول وتحديد الفترة والاسم.');
       return;
     }
 
-    const activeField = PITCH_FIELDS.find(f => f.id === adminSelectedFieldId) || PITCH_FIELDS[0];
-    const price = isPrimeSlot(manualSlot) ? activeField.primePrice : activeField.basePrice;
+    const manualEndTime = calculateEndTime(manualStartTime, manualDuration);
+
+    if (checkOverlap(selectedDate, manualStartTime, manualEndTime)) {
+      setFormError('عذراً، هذا الوقت يتعارض مع حجز موجود.');
+      return;
+    }
+
+    const price = currentPublicField.basePrice * manualDuration;
 
     const newBooking: Booking = {
-      id: `m-${Date.now()}`,
-      fieldId: adminSelectedFieldId,
+      id: `bk_${Date.now()}`,
+      customerName: userName.trim(),
+      phone: userPhone.trim(),
       date: selectedDate,
-      timeSlot: manualSlot,
-      userName: userName.trim(),
-      userPhone: userPhone.trim(),
-      userEmail: userEmail ? userEmail.trim() : undefined,
-      price,
-      status: 'confirmed',
-      gameType,
+      startTime: manualStartTime,
+      endTime: manualEndTime,
+      duration: manualDuration,
+      price: price,
+      status: 'booked',
       notes: notes.trim() || undefined,
       createdAt: new Date().toISOString()
     };
 
-    const isSlotTaken = bookings.some(
-      b => b.date === selectedDate && b.fieldId === adminSelectedFieldId && b.timeSlot === manualSlot && b.status !== 'canceled'
-    );
+    setOptimisticBooking(newBooking);
+    fetch(`${API_URL}`, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'createBooking', ...newBooking })
+    }).catch(() => {});
 
-    if (isSlotTaken) {
-      setFormError('عذراً، هذه الفترة محجوزة بالفعل في هذا الملعب!');
-      return;
-    }
-
-    setBookings(prev => [...prev, newBooking]);
     setIsAddingManualBooking(false);
 
     // Reset fields
@@ -287,8 +278,9 @@ export default function App() {
     setUserPhone('');
     setUserEmail('');
     setNotes('');
+
     setFormError('');
-    setManualSlot('');
+    setManualStartTime('');
   };
 
   return (
@@ -424,15 +416,21 @@ export default function App() {
                     center: 'title',
                     right: ''
                   }}
-                  events={monthData.map(day => {
-                    const totalSlots = TIME_SLOTS.length;
-                    const bookedCount = day.slots.filter(s => s.status === 'booked' || s.status === 'pending').length;
+                  events={Object.entries(
+                    fetchedBookings.reduce((acc, b) => {
+                      if (b.status === 'cancelled') return acc;
+                      if (!acc[b.date]) acc[b.date] = 0;
+                      acc[b.date] += b.duration;
+                      return acc;
+                    }, {} as Record<string, number>)
+                  ).map(([date, hours]) => {
+                    const totalHours = 10;
                     let color = '#10b981'; // Green
-                    if (bookedCount === totalSlots) color = '#ef4444'; // Red
-                    else if (bookedCount > 0) color = '#f59e0b'; // Yellow
+                    if (hours >= totalHours) color = '#ef4444'; // Red
+                    else if (hours > 0) color = '#f59e0b'; // Yellow
 
                     return {
-                      start: day.date,
+                      start: date,
                       display: 'background',
                       backgroundColor: color,
                     };
@@ -445,7 +443,8 @@ export default function App() {
                   }}
                   dateClick={(arg) => {
                     setSelectedDate(arg.dateStr);
-                    setSelectedSlot(null);
+                    setSelectedStartTime('');
+
                     setIsDayModalOpen(true);
                   }}
                   height="auto"
@@ -477,39 +476,48 @@ export default function App() {
                     {isLoading ? (
                       <div className="py-10 text-center text-zinc-400 text-xs">جاري تحميل المواعيد...</div>
                     ) : (
-                      <div className="grid grid-cols-2 gap-2">
-                        {apiSlots.map(({ id, time, status }) => {
-                          const isBooked  = status === 'booked';
-                          const isPending = status === 'pending';
-                          const isUnavailable = isBooked || isPending;
-                          const isCurrentlySelected = selectedSlot === time;
-                          
-                          return (
-                            <button
-                              key={id}
-                              onClick={() => {
-                                if (!isUnavailable) {
-                                  setSelectedSlot(time);
-                                  setFormError('');
-                                } else {
-                                  setFormError(`عذراً، الفترة "${time}" ${isPending ? 'بانتظار التأكيد' : 'محجوزة'}.`);
-                                }
-                              }}
-                              disabled={isUnavailable}
-                              className={`p-3 text-center border transition-all duration-200 flex flex-col justify-center items-center rounded-xl h-[80px] ${
-                                isBooked ? 'bg-[#121212] border-zinc-800 text-zinc-600 opacity-40 cursor-not-allowed'
-                                : isPending ? 'bg-amber-950/30 border-amber-700/50 text-amber-500 cursor-not-allowed'
-                                : isCurrentlySelected ? 'bg-[#122c18] border-emerald-400 text-white shadow-md ring-2 ring-emerald-500/30'
-                                : 'bg-[#0b100c] border-[#16271a] text-zinc-300 hover:border-emerald-500/35'
-                              }`}
+                      <div className="space-y-4">
+                        <div className="bg-[#0b120d] p-3 rounded-xl border border-emerald-950/30">
+                          <h4 className="text-xs font-bold text-emerald-400 mb-2">الحجوزات الحالية:</h4>
+                          {fetchedBookings.filter(b => b.date === selectedDate && b.status !== 'cancelled').length === 0 ? (
+                            <p className="text-[10px] text-zinc-500">لا يوجد حجوزات. الملعب متاح بالكامل.</p>
+                          ) : (
+                            <div className="space-y-1.5">
+                              {fetchedBookings.filter(b => b.date === selectedDate && b.status !== 'cancelled').map(b => (
+                                <div key={b.id} className="text-[10px] text-zinc-300 flex items-center justify-between bg-[#070e0a] p-2 rounded border border-zinc-800">
+                                  <span>{formatTime12Hour(b.startTime)} - {formatTime12Hour(b.endTime)}</span>
+                                  <span className={b.status === 'booked' ? 'text-rose-400' : 'text-amber-400'}>{b.status === 'booked' ? 'محجوز' : 'قيد الانتظار'}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="text-[10px] text-zinc-400 block mb-1">وقت البدء</label>
+                            <select 
+                              value={selectedStartTime}
+                              onChange={e => setSelectedStartTime(e.target.value)}
+                              className="w-full bg-[#070e0a] border border-emerald-950/40 rounded-lg p-2.5 text-xs text-white outline-none focus:border-emerald-500"
                             >
-                              <span className="text-xs font-bold font-mono block">{time}</span>
-                              <span className={`text-[10px] font-extrabold mt-1 block ${isBooked ? 'text-zinc-500' : isPending ? 'text-amber-500' : 'text-emerald-400'}`}>
-                                {isBooked ? 'محجوز' : isPending ? 'بانتظار' : 'متاح'}
-                              </span>
-                            </button>
-                          );
-                        })}
+                              <option value="">اختر الوقت...</option>
+                              {TIME_SLOTS.map(t => <option key={t} value={t}>{formatTime12Hour(t)}</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="text-[10px] text-zinc-400 block mb-1">مدة الحجز</label>
+                            <select 
+                              value={selectedDuration}
+                              onChange={e => setSelectedDuration(Number(e.target.value))}
+                              className="w-full bg-[#070e0a] border border-emerald-950/40 rounded-lg p-2.5 text-xs text-white outline-none focus:border-emerald-500"
+                            >
+                              <option value={1}>ساعة واحدة</option>
+                              <option value={1.5}>ساعة ونصف</option>
+                              <option value={2}>ساعتان</option>
+                            </select>
+                          </div>
+                        </div>
                       </div>
                     )}
 
@@ -524,9 +532,9 @@ export default function App() {
                   <div className="p-4 border-t border-emerald-950/20 bg-[#0b120d]">
                     <button
                       onClick={handlePlaceBookingSubmit}
-                      disabled={!selectedSlot}
+                      disabled={!selectedStartTime}
                       className={`w-full py-3.5 rounded-xl font-black text-xs flex items-center justify-center gap-2 transition-all ${
-                        selectedSlot 
+                        selectedStartTime 
                           ? 'bg-[#25D366] hover:bg-[#20ba59] text-black shadow-lg hover:shadow-[#25D366]/20' 
                           : 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
                       }`}
@@ -571,7 +579,7 @@ export default function App() {
 
             {/* Live stats display in Arabic */}
             <DashboardStats 
-              bookings={bookings} 
+              bookings={fetchedBookings} 
               fields={PITCH_FIELDS} 
               selectedDate={selectedDate} 
             />
@@ -594,87 +602,79 @@ export default function App() {
                   </div>
 
                   <div className="divide-y divide-emerald-950/10">
-                    {apiSlots.map(({ id, time, status }) => {
-                      const isPending   = status === 'pending';
-                      const isBooked    = status === 'booked';
-                      const isAvailable = status === 'available';
-                      return (
-                        <div
-                          key={id}
-                          className={`p-4 transition-all duration-300 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 ${
-                            isBooked  ? 'bg-gradient-to-l from-emerald-950/10 via-transparent to-transparent'
-                            : isPending ? 'bg-gradient-to-l from-amber-950/10 via-transparent to-transparent'
-                            : 'bg-transparent hover:bg-white/[0.01]'
-                          }`}
-                        >
-                          {/* Time + status badge */}
-                          <div className="flex items-center gap-3 shrink-0 min-w-[130px]">
-                            <span className="font-mono text-xs text-white font-bold">{time}</span>
-                            {isPending && (
-                              <span className="text-[8px] bg-amber-500/10 text-amber-400 font-bold px-1.5 py-0.5 rounded">
-                                ⏳ بانتظار
-                              </span>
-                            )}
-                            {isBooked && (
-                              <span className="text-[8px] bg-emerald-500/10 text-emerald-400 font-bold px-1.5 py-0.5 rounded">
-                                ✓ محجوز
-                              </span>
-                            )}
-                            {isAvailable && (
-                              <span className="text-[8px] bg-zinc-800 text-zinc-500 font-bold px-1.5 py-0.5 rounded">
-                                شاغر
-                              </span>
-                            )}
-                          </div>
+                    {fetchedBookings.filter(b => b.date === selectedDate).length === 0 ? (
+                      <div className="p-8 text-center text-zinc-500 text-xs">لا توجد أي حجوزات لهذا اليوم. الملعب شاغر بالكامل.</div>
+                    ) : (
+                      fetchedBookings.filter(b => b.date === selectedDate).map((booking) => {
+                        const isPending   = booking.status === 'pending';
+                        const isBooked    = booking.status === 'booked';
+                        const isCancelled = booking.status === 'cancelled';
+                        return (
+                          <div
+                            key={booking.id}
+                            className={`p-4 transition-all duration-300 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 ${
+                              isBooked  ? 'bg-gradient-to-l from-emerald-950/10 via-transparent to-transparent'
+                              : isPending ? 'bg-gradient-to-l from-amber-950/10 via-transparent to-transparent'
+                              : 'bg-gradient-to-l from-rose-950/10 via-transparent to-transparent opacity-50'
+                            }`}
+                          >
+                            {/* Time + status badge */}
+                            <div className="flex items-center gap-3 shrink-0 min-w-[130px]">
+                              <span className="font-mono text-xs text-white font-bold">{formatTime12Hour(booking.startTime)} - {formatTime12Hour(booking.endTime)}</span>
+                              {isPending && (
+                                <span className="text-[8px] bg-amber-500/10 text-amber-400 font-bold px-1.5 py-0.5 rounded">
+                                  ⏳ بانتظار
+                                </span>
+                              )}
+                              {isBooked && (
+                                <span className="text-[8px] bg-emerald-500/10 text-emerald-400 font-bold px-1.5 py-0.5 rounded">
+                                  ✓ محجوز
+                                </span>
+                              )}
+                              {isCancelled && (
+                                <span className="text-[8px] bg-rose-500/10 text-rose-400 font-bold px-1.5 py-0.5 rounded">
+                                  ألغي
+                                </span>
+                              )}
+                            </div>
 
-                          {/* Status description */}
-                          <div className="flex-1 min-w-0 text-[11px]">
-                            {isBooked && <span className="text-emerald-400 font-bold">تم الحجز والتأكيد</span>}
-                            {isPending && <span className="text-amber-400">بانتظار تأكيد الدفع عبر الواتساب</span>}
-                            {isAvailable && <span className="text-zinc-500 italic">الفترة شاغرة • متاحة للحجز</span>}
-                          </div>
+                            {/* Status description */}
+                            <div className="flex-1 min-w-0 text-[11px]">
+                              <span className="text-white block font-bold">{booking.customerName}</span>
+                              <span className="text-zinc-500 font-mono">{booking.phone}</span>
+                            </div>
 
-                          {/* Action buttons */}
-                          <div className="shrink-0 flex items-center gap-2">
-                            {isPending && (
-                              <>
+                            {/* Action buttons */}
+                            <div className="shrink-0 flex items-center gap-2">
+                              {isPending && (
+                                <>
+                                  <button
+                                    onClick={() => approveSlot(booking.id)}
+                                    className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-black text-[10.5px] font-black rounded-lg transition-all"
+                                  >
+                                    ✔ تأكيد
+                                  </button>
+                                  <button
+                                    onClick={() => rejectSlot(booking.id)}
+                                    className="px-3 py-1 bg-rose-900/40 hover:bg-rose-800/60 border border-rose-700/30 text-rose-400 text-[10.5px] font-black rounded-lg transition-all"
+                                  >
+                                    ✖ رفض
+                                  </button>
+                                </>
+                              )}
+                              {isBooked && (
                                 <button
-                                  onClick={() => approveSlot(selectedDate, time)}
-                                  className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-black text-[10.5px] font-black rounded-lg transition-all"
+                                  onClick={() => rejectSlot(booking.id)}
+                                  className="px-3 py-1 bg-white/5 hover:bg-rose-900/30 text-zinc-400 hover:text-rose-400 text-[10.5px] font-bold rounded-lg transition-all"
                                 >
-                                  ✔ تأكيد
+                                  إلغاء الحجز
                                 </button>
-                                <button
-                                  onClick={() => rejectSlot(selectedDate, time)}
-                                  className="px-3 py-1 bg-rose-900/40 hover:bg-rose-800/60 border border-rose-700/30 text-rose-400 text-[10.5px] font-black rounded-lg transition-all"
-                                >
-                                  ✖ رفض
-                                </button>
-                              </>
-                            )}
-                            {isBooked && (
-                              <button
-                                onClick={() => rejectSlot(selectedDate, time)}
-                                className="px-3 py-1 bg-white/5 hover:bg-rose-900/30 text-zinc-400 hover:text-rose-400 text-[10.5px] font-bold rounded-lg transition-all"
-                              >
-                                إلغاء
-                              </button>
-                            )}
-                            {isAvailable && (
-                              <button
-                                onClick={() => {
-                                  setManualSlot(time);
-                                  setIsAddingManualBooking(true);
-                                }}
-                                className="px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 hover:bg-emerald-500/20 text-emerald-400 text-[10.5px] font-bold rounded-lg transition-all"
-                              >
-                                + حجز يدوي
-                              </button>
-                            )}
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })
+                    )}
                   </div>
 
                 </div>
@@ -816,21 +816,38 @@ export default function App() {
             </div>
 
             <form onSubmit={handleAdminManualSubmit} className="p-5 space-y-4">
-              <div>
-                <label className="block text-[10px] text-zinc-400 font-bold mb-1">
-                  اختر وقت فترة اللعب للحجز *
-                </label>
-                <select
-                  required
-                  value={manualSlot}
-                  onChange={(e) => setManualSlot(e.target.value)}
-                  className="w-full bg-[#030604] border border-emerald-950 rounded-xl py-2 px-3 text-xs text-white focus:outline-none focus:border-emerald-500/60 font-mono"
-                >
-                  <option value="">-- اختر موعد متاح من القائمة --</option>
-                  {TIME_SLOTS.map(t => (
-                    <option key={t} value={t}>{t} {isPrimeSlot(t) ? '(فترة ذروة ⭐)' : '(فترة عادية)'}</option>
-                  ))}
-                </select>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] text-zinc-400 font-bold mb-1">
+                    اختر وقت البدء *
+                  </label>
+                  <select
+                    required
+                    value={manualStartTime}
+                    onChange={(e) => setManualStartTime(e.target.value)}
+                    className="w-full bg-[#030604] border border-emerald-950 rounded-xl py-2 px-3 text-xs text-white focus:outline-none focus:border-emerald-500/60 font-mono"
+                  >
+                    <option value="">-- اختر موعد --</option>
+                    {TIME_SLOTS.map(t => (
+                      <option key={t} value={t}>{formatTime12Hour(t)}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] text-zinc-400 font-bold mb-1">
+                    مدة الحجز *
+                  </label>
+                  <select
+                    required
+                    value={manualDuration}
+                    onChange={(e) => setManualDuration(Number(e.target.value))}
+                    className="w-full bg-[#030604] border border-emerald-950 rounded-xl py-2 px-3 text-xs text-white focus:outline-none focus:border-emerald-500/60 font-mono"
+                  >
+                    <option value={1}>ساعة واحدة</option>
+                    <option value={1.5}>ساعة ونصف</option>
+                    <option value={2}>ساعتان</option>
+                  </select>
+                </div>
               </div>
 
               <div>

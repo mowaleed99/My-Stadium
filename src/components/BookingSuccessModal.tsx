@@ -1,5 +1,6 @@
 import React from 'react';
 import { Booking, FootballField } from '../types';
+import { formatTime12Hour } from '../constants';
 import { Check, X, Calendar, Clock, User, Phone, MessageSquare } from 'lucide-react';
 
 interface BookingSuccessModalProps {
@@ -29,12 +30,10 @@ export const BookingSuccessModal: React.FC<BookingSuccessModalProps> = ({
   // Localized Egyptian WhatsApp message
   const message = `السلام عليكم يا كابتن، إدارة ملعب الجول الخماسي بالتجمع ⚽️! حابب آكد حجز الفترة الخاصة بفريقي:
   - الملعب: ${field.name}
-  - نظام اللعب: خماسي (5 ضد 5)
   - التاريخ واليوم: ${booking.date}
-  - التوقيت المختار: ${booking.timeSlot}
-  - اسم الكابتن المسؤول: ${booking.userName}
-  - رقم موبايل التواصل: ${booking.userPhone}
-  - طبيعة المباراة: ${translateGameType(booking.gameType)}
+  - التوقيت المختار: ${formatTime12Hour(booking.startTime)} لمدة ${booking.duration} ساعة
+  - اسم الكابتن المسؤول: ${booking.customerName}
+  - رقم موبايل التواصل: ${booking.phone}
   - ملاحظات خاصة: ${booking.notes || 'لا يوجد'}
 
 يرجى إرسال موقع الملعب وتأكيد الحجز. شكراً جزيلاً!`;
@@ -88,7 +87,7 @@ export const BookingSuccessModal: React.FC<BookingSuccessModalProps> = ({
                 </p>
               </div>
               <span className="text-[10px] bg-emerald-500/15 text-emerald-300 font-sans font-extrabold px-3 py-1 rounded-full text-center">
-                مؤكد مبوئياً
+                مؤكد مبدئياً
               </span>
             </div>
 
@@ -105,8 +104,8 @@ export const BookingSuccessModal: React.FC<BookingSuccessModalProps> = ({
               <div className="flex items-center gap-2">
                 <Clock className="w-4 h-4 text-emerald-500/80 shrink-0" />
                 <div>
-                  <p className="text-[9.5px] text-white/30 font-semibold">توقيت الفترة</p>
-                  <p className="font-bold text-white mt-0.5 font-mono">{booking.timeSlot}</p>
+                  <p className="text-[9.5px] text-white/30 font-semibold">التوقيت</p>
+                  <p className="font-bold text-white mt-0.5 font-mono">{formatTime12Hour(booking.startTime)} - {formatTime12Hour(booking.endTime)}</p>
                 </div>
               </div>
 
@@ -114,15 +113,15 @@ export const BookingSuccessModal: React.FC<BookingSuccessModalProps> = ({
                 <User className="w-4 h-4 text-emerald-500/80 shrink-0" />
                 <div>
                   <p className="text-[9.5px] text-white/30 font-semibold">كابتن الفريق</p>
-                  <p className="font-bold text-white mt-0.5 truncate max-w-[120px]">{booking.userName}</p>
+                  <p className="font-bold text-white mt-0.5 truncate max-w-[120px]">{booking.customerName}</p>
                 </div>
               </div>
 
               <div className="flex items-center gap-2">
                 <Phone className="w-4 h-4 text-emerald-500/80 shrink-0" />
                 <div>
-                  <p className="text-[9.5px] text-white/30 font-semibold">رقم الواتساب</p>
-                  <p className="font-bold text-white mt-0.5 font-mono truncate max-w-[120px]">{booking.userPhone}</p>
+                  <p className="text-[9.5px] text-white/30 font-semibold">رقم التواصل</p>
+                  <p className="font-bold text-white mt-0.5 font-mono truncate max-w-[120px]">{booking.phone}</p>
                 </div>
               </div>
             </div>

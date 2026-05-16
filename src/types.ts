@@ -14,15 +14,14 @@ export type BookingStatus = 'confirmed' | 'pending' | 'canceled';
 
 export interface Booking {
   id: string;
-  fieldId: string;
+  customerName: string;
+  phone: string;
   date: string; // YYYY-MM-DD
-  timeSlot: string; // "17:30 - 19:00"
-  userName: string;
-  userPhone: string;
-  userEmail?: string;
+  startTime: string; // "16:00"
+  endTime: string; // "17:30"
+  duration: number;
   price: number;
-  status: BookingStatus;
-  gameType?: 'friendly' | 'tournament' | 'practice' | 'league';
+  status: 'pending' | 'booked' | 'cancelled';
   notes?: string;
   createdAt: string;
 }
