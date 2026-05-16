@@ -626,9 +626,17 @@ export default function App() {
                 <h2 className="text-lg font-black text-white">
                   منصة الإشراف اليومية والمكاسب: <span className="text-emerald-400 font-mono text-sm">مكتب التحكم العام</span>
                 </h2>
-                <span className="text-[11px] text-zinc-400 leading-none">
-                  عرض حركات الإيجار، الإيرادات الحية المستحقة وسجل الحجوزات لتاريخ اليوم: <span className="text-emerald-400 font-bold">{selectedDate}</span>.
-                </span>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-[11px] text-zinc-400 leading-none">
+                    عرض حركات الإيجار، الإيرادات الحية المستحقة وسجل الحجوزات لتاريخ:
+                  </span>
+                  <input
+                    type="date"
+                    value={selectedDate}
+                    onChange={(e) => setSelectedDate(e.target.value)}
+                    className="bg-[#070e0a] border border-emerald-950/40 rounded-lg px-2 py-1 text-xs text-emerald-400 font-mono font-bold outline-none focus:border-emerald-500"
+                  />
+                </div>
               </div>
               
               <button
