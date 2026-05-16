@@ -5,8 +5,8 @@ export const FIELD_INFO: FootballField = {
   name: 'ملعب الجراش (طنطا - محلة مرحوم)',
   type: 'indoor', // standard turf pitch
   format: '5v5',
-  basePrice: 150, // Typical local pricing or just set to a simple fixed number
-  primePrice: 150, // Keeping it the same to avoid typescript errors if used elsewhere
+  basePrice: 100, // Price PER HOUR (100 EGP/hr means 150 EGP for 1.5 hrs)
+  primePrice: 100, 
   rating: 4.8,
   image: 'https://images.unsplash.com/photo-1508098682722-e99c43a406b2?q=80&w=600&auto=format&fit=crop',
   features: [
