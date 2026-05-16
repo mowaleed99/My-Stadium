@@ -1,8 +1,0 @@
-{
-  "name": "Verde Turf Arena",
-  "description": "A premium, mobile-first booking web application for a luxury sports venue, featuring a modern scheduling system, real-time availability indicator, WhatsApp booking integration, and a mobile-optimized admin dashboard with analytics.",
-  "requestFramePermissions": [],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
-}

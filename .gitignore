@@ -4,5 +4,15 @@ dist/
 coverage/
 .DS_Store
 *.log
+
+# Environment & secrets
 .env*
 !.env.example
+
+# AI Studio / internal metadata
+metadata.json
+
+# Editor & OS files
+.vscode/
+.idea/
+Thumbs.db
