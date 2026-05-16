@@ -64,6 +64,7 @@ export default function App() {
 
         if (validAdminHashes.includes(hashedPassword)) {
           localStorage.setItem('isAdmin', 'true');
+          localStorage.setItem('adminHash', hashedPassword);
           setIsAuthenticated(true);
           window.history.replaceState({}, document.title, window.location.pathname);
           setAppMode('admin');
@@ -86,6 +87,7 @@ export default function App() {
 
     if (validAdminHashes.includes(hashedPassword)) {
       localStorage.setItem('isAdmin', 'true');
+      localStorage.setItem('adminHash', hashedPassword);
       setIsAuthenticated(true);
       setAppMode('admin');
       setLoginError('');
@@ -136,6 +138,7 @@ export default function App() {
   const [isAddingManualBooking, setIsAddingManualBooking] = useState(false);
   const [manualStartTime, setManualStartTime] = useState<string>('');
   const [manualDuration, setManualDuration] = useState<number>(1.5);
+  const [manualPrice, setManualPrice] = useState<string>('');
   const [inspectedBooking, setInspectedBooking] = useState<Booking | null>(null);
 
   // Fetch full month availability with 15s polling
@@ -257,7 +260,12 @@ export default function App() {
     setFetchedBookings(prev => prev.map(b => b.id === id ? { ...b, status: 'booked' } : b));
     fetch(`${API_URL}`, {
       method: 'POST',
-      body: JSON.stringify({ action: 'updateBookingStatus', id, status: 'booked' })
+      body: JSON.stringify({ 
+        action: 'updateBookingStatus', 
+        id, 
+        status: 'booked',
+        adminHash: localStorage.getItem('adminHash')
+      })
     }).catch(() => {});
   };
 
@@ -266,7 +274,12 @@ export default function App() {
     setFetchedBookings(prev => prev.map(b => b.id === id ? { ...b, status: 'cancelled' } : b));
     fetch(`${API_URL}`, {
       method: 'POST',
-      body: JSON.stringify({ action: 'updateBookingStatus', id, status: 'cancelled' })
+      body: JSON.stringify({ 
+        action: 'updateBookingStatus', 
+        id, 
+        status: 'cancelled',
+        adminHash: localStorage.getItem('adminHash')
+      })
     }).catch(() => {});
   };
 
@@ -291,7 +304,7 @@ export default function App() {
       return;
     }
 
-    const price = currentPublicField.basePrice * manualDuration;
+    const price = manualPrice ? Number(manualPrice) : (currentPublicField.basePrice * manualDuration);
 
     const newBooking: Booking = {
       id: `bk_${Date.now()}`,
@@ -310,16 +323,20 @@ export default function App() {
     setOptimisticBooking(newBooking);
     fetch(`${API_URL}`, {
       method: 'POST',
-      body: JSON.stringify({ action: 'createBooking', ...newBooking })
+      body: JSON.stringify({ 
+        action: 'createBooking', 
+        ...newBooking,
+        adminHash: localStorage.getItem('adminHash') 
+      })
     }).catch(() => {});
 
     setIsAddingManualBooking(false);
 
-    // Reset fields
     setUserName('');
     setUserPhone('');
     setUserEmail('');
     setNotes('');
+    setManualPrice('');
 
     setFormError('');
     setManualStartTime('');
@@ -375,6 +392,7 @@ export default function App() {
             <button
               onClick={() => {
                 localStorage.removeItem('isAdmin');
+                localStorage.removeItem('adminHash');
                 setIsAuthenticated(false);
                 setAppMode('public');
               }}
@@ -572,6 +590,12 @@ export default function App() {
 
                   {/* Modal Footer / Submit */}
                   <div className="p-4 border-t border-emerald-950/20 bg-[#0b120d]">
+                    <div className="flex justify-between items-center mb-4 px-2">
+                      <span className="text-xs text-zinc-400 font-bold">إجمالي التكلفة المتوقعة:</span>
+                      <span className="text-sm font-black text-emerald-400 font-mono">
+                        {selectedStartTime ? (currentPublicField.basePrice * selectedDuration) : 0} ج.م
+                      </span>
+                    </div>
                     <button
                       onClick={handlePlaceBookingSubmit}
                       disabled={!selectedStartTime}
@@ -939,7 +963,7 @@ export default function App() {
 
                 <div>
                   <label className="block text-[10px] text-zinc-400 font-bold mb-1 font-sans">
-                    البريد الإلكتروني
+                    البريد الإلكتروني (اختياري)
                   </label>
                   <input
                     type="email"
@@ -947,6 +971,18 @@ export default function App() {
                     value={userEmail}
                     onChange={(e) => setUserEmail(e.target.value)}
                     className="w-full bg-[#030604] border border-emerald-950 rounded-xl py-2 px-3 text-xs text-white placeholder-zinc-700 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-zinc-400 font-bold mb-1 font-sans">
+                    سعر الحجز المخصص (اختياري)
+                  </label>
+                  <input
+                    type="number"
+                    placeholder={`الافتراضي: ${currentPublicField.basePrice * manualDuration} ج.م`}
+                    value={manualPrice}
+                    onChange={(e) => setManualPrice(e.target.value)}
+                    className="w-full bg-[#030604] border border-emerald-950 rounded-xl py-2 px-3 text-xs text-white placeholder-zinc-700 focus:outline-none focus:border-emerald-500/60 font-mono"
                   />
                 </div>
               </div>
