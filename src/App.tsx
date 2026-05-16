@@ -14,6 +14,7 @@ import { Booking, FootballField, BookingStatus } from './types';
 import { PitchVisualizer } from './components/PitchVisualizer';
 import { DashboardStats } from './components/DashboardStats';
 import { BookingSuccessModal } from './components/BookingSuccessModal';
+import { AdminDatePicker } from './components/AdminDatePicker';
 
 import { 
   MapPin, 
@@ -630,11 +631,9 @@ export default function App() {
                   <span className="text-[11px] text-zinc-400 leading-none">
                     عرض حركات الإيجار، الإيرادات الحية المستحقة وسجل الحجوزات لتاريخ:
                   </span>
-                  <input
-                    type="date"
-                    value={selectedDate}
-                    onChange={(e) => setSelectedDate(e.target.value)}
-                    className="bg-[#070e0a] border border-emerald-950/40 rounded-lg px-2 py-1 text-xs text-emerald-400 font-mono font-bold outline-none focus:border-emerald-500"
+                  <AdminDatePicker 
+                    selectedDate={selectedDate} 
+                    onChange={setSelectedDate} 
                   />
                 </div>
               </div>
