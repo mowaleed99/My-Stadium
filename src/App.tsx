@@ -840,16 +840,16 @@ export default function App() {
 
           <div className="space-y-3">
             <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-sans">
-              للتواصل والحجز السريع
+              للتوصل و الحصول  على مواقع او برامج 
             </h4>
             <div className="text-xs text-[#22c55e] space-y-1.5 font-bold">
-              <p>واتساب: 01000000000</p>
+              <p>واتساب : 01507953119</p>
             </div>
           </div>
         </div>
 
         <div className="max-w-7xl mx-auto border-t border-emerald-950/10 mt-8 pt-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-[10px] text-zinc-500">
-          <p>© ٢٠٢٦ ملعب الجراش الخماسي. جميع الحقوق محفوظة.</p>
+          <p>© ٢٠٢٦ Al-MarwaTech. جميع الحقوق محفوظة.</p>
         </div>
       </footer>
 
